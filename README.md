@@ -31,14 +31,14 @@ Każdy proces przechowuje:
 
 * zegar Lamporta
 * własny smród
-* kolejkę `Q` z odebranymi, jeszcze nie usuniętymi `REQUEST`
+* kolejka `Q` z odebranymi, jeszcze nie usuniętymi `REQUEST`
 * zbiór procesów aktualnie obecnych w sali `inside_set`
-* identyfikator ostatniego obsłużonego omdlenia `last_faint_id`
-* identyfikator ostatniego wejścia, które zostało już rozliczone przez strażnika `cut_id`
-* lokalną wartość skumulowanego smrodu `X_acc`
+* identyfikator ostatniego obsłużonego faint `last_faint_id`
+* identyfikator ostatniego wejścia, które już doświadczył aktualny strażnik `cut_id`
+* lokalna wartość skumulowanego smrodu `X_acc`
 * licznik odebranych potwierdzeń `ack_count`
-* flagę `want_enter`, oznaczającą, że proces czeka na wejście
-* flagę `faint_sent`, oznaczającą, że dla aktualnego omdlenia został już wysłany `FAINT`
+* flaga `want_enter` - proces czeka na wejście
+* flaga `faint_sent` - dla aktualnego omdlenia został już wysłany `FAINT`
 * lokalny licznik kolejnych omdleń `next_faint_seq`
 * licznik odebranych komunikatów `BANNED`
 
@@ -50,7 +50,7 @@ Wszystkie procesy traktują kolejkę `Q` jako wspólny, deterministyczny porząd
 
 ### REQUEST(ts, pid, smell)
 
-Żądanie dostępu do sali. Zawiera:
+Żądanie dostępu do sali zawiera:
 
 * `ts` - znacznik Lamporta nadawcy
 * `pid` - identyfikator procesu
@@ -70,7 +70,7 @@ Informacja, że proces opuścił salę.
 
 ### FAINT(trigger_ts, trigger_pid, faint_id)
 
-Informacja, że strażnik zemdlał po przekroczeniu dawki X.
+Informacja, że strażnik zemdlał po przekroczeniu skumulowanej dawki X.
 
 * `trigger_ts`, `trigger_pid` - identyfikator wejścia, które wywołało omdlenie
 * `faint_id` - identyfikator tego konkretnego omdlenia, używany do ochrony przed duplikatami
@@ -269,11 +269,8 @@ To gwarantuje, że:
 
 ## Właściwości algorytmu
 
-* brak centralnego zarządcy
-* wszystkie procesy mają równorzędną rolę
 * porządek wejść jest deterministyczny dzięki znacznikom Lamporta
 * dokładnie jeden proces wysyła `FAINT` dla danego omdlenia
-* obsługa `FAINT` jest idempotentna
 * procesy nie są głodzone, bo kolejka jest wyznaczana według stałego porządku `(ts, pid)`
 * pamięć jest ograniczana przez usuwanie prefixu historii po każdym omdleniu
 * po wykluczeniu wszystkich otaku symulacja się kończy
