@@ -172,9 +172,9 @@ Po otrzymaniu wszystkich `ACK` proces:
 1. sortuje `Q` po `(ts, pid)`
 2. bierze odcinek kolejki od `cut_id` do końca
 3. wyznacza skumulowany smród `X_acc` dla tego odcinka
-4. znajduje pierwszy wpis, po którym suma przekracza `X`
+4. znajduje pierwszy wpis, po którym suma przekracza `X` (jeśli taka sytuacja występuje)
 
-Jeżeli pierwszy taki wpis to własne `my_request_id`, proces jest jedynym nadawcą `FAINT` dla tego omdlenia.
+Jeżeli pierwszy taki wpis z pkt 4. to własne `my_request_id`, proces jest jedynym nadawcą `FAINT` dla tego omdlenia.
 
 Wtedy:
 
@@ -183,7 +183,7 @@ Wtedy:
 3. ustawia `faint_sent = true`
 4. zwiększa `next_faint_seq`
 
-Jeżeli pierwszy taki wpis nie jest własnym wpisem, proces:
+Jeżeli pierwszy taki wpis z pkt 4. nie jest własnym wpisem, proces:
 
 1. czeka na dalsze `ENTER` i `FAINT`
 2. nie wysyła `FAINT`
@@ -247,7 +247,7 @@ Jeżeli po aktualizacji smród przekroczy M, proces zostaje wykluczony, wysyła 
 
 ## Stan: obsługa omdlenia
 
-Stan ten jest logiczny, a nie osobna faza komunikacji. Procesy wchodzą do niego po odebraniu `FAINT`.
+Procesy wchodzą do tego stanu logicznego po odebraniu `FAINT`.
 
 ### Reguły obsługi `FAINT`
 
@@ -255,7 +255,7 @@ Stan ten jest logiczny, a nie osobna faza komunikacji. Procesy wchodzą do niego
 2. Jeżeli odebrany `FAINT` ma identyfikator nie większy niż `last_faint_id`, wiadomość jest duplikatem i należy ją zignorować.
 3. W przeciwnym razie proces:
    * odejmuje `X` od lokalnego `X_acc`
-   * usuwa z kolejki tylko prefix do `(trigger_ts, trigger_pid)` włącznie
+   * usuwa z kolejki tylko prefix do `(trigger_ts, trigger_pid)` włącznie (by oszczędzać pamięć)
    * ustawia nową granicę `cut_id`
    * przelicza `X_acc` tylko na pozostałej części kolejki
 
