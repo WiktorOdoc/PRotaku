@@ -62,7 +62,7 @@ Potwierdzenie odebrania `REQUEST`.
 
 ### ENTER(ts, pid, smell)
 
-Informacja, że proces faktycznie wszedł do sali.
+Informacja, że procesowi faktycznie udało się wejść do sali.
 
 ### RELEASE(ts, pid)
 
