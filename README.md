@@ -14,7 +14,7 @@ Jeżeli smród otaku przekroczy M, zostaje on wykluczony z dalszego udziału w a
 ---
 
 
-Właściwość kluczowa:
+Istotne właściwości:
 
 * dokładnie jeden proces wysyła komunikat `FAINT` dla danego omdlenia strażnika,
 * pozostałe procesy tylko aktualizują swój lokalny stan po odebraniu `FAINT`,
