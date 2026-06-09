@@ -259,11 +259,11 @@ Procesy wchodzą do tego stanu logicznego po odebraniu `FAINT`.
    * ustawia nową granicę `cut_id`
    * przelicza `X_acc` tylko na pozostałej części kolejki
 
-To gwarantuje, że:
+Wtedy:
 
-* każde omdlenie jest rozliczane tylko raz,
-* spóźnione wiadomości nie przywrócą stanu sprzed omdlenia,
-* pamięć zużywana przez historię pozostaje ograniczona.
+* każde omdlenie jest rozliczane tylko raz
+* spóźnione wiadomości nie przywrócą stanu sprzed omdlenia
+* pamięć zużywana przez historię pozostaje ograniczona
 
 ---
 
