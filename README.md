@@ -1,5 +1,18 @@
 # Algorytm rozproszony - Otaku
 
+## Kompilacja i uruchamianie:
+
+Kompilacja:
+
+```mpicc src/otaku.c -o otaku.o```
+
+Uruchamianie:
+
+```mpirun -oversubscribe -np {N} ./otaku.o {S} {M} {X} {slow}```
+
+gdzie `slow` dla wartości 1 spowalnia działanie otaku, natomiast dla 0 wszystko wykonuje się jak najszybciej.
+
+
 ## Parametry
 
 * N - liczba otaku
