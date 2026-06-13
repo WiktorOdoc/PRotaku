@@ -499,6 +499,14 @@ int main(int argc, char **argv) {
     if (argc >= 5) {
         slow = parse_int(argv[4], "slow") != 0;
     }
+    
+    if(guard_limit < max_smell) {
+    	fprintf(stderr, "X nie może być mniejsze od M.\n");
+    	MPI_Finalize();
+    	return 1;
+    }
+    
+    
     if (stations <= 0 || guard_limit <= 0) {
         if (world_rank == 0) {
             fprintf(stderr, "S i X musza byc dodatnie.\n");
