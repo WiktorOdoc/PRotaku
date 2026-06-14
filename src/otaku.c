@@ -52,7 +52,7 @@ long long history_sum = 0;
 long long dose = 0;
 RequestId cut_id = {-1, -1};
 RequestId my_request_id = {-1, -1};
-int last_faint_id = 0;
+int *last_faint_id_by_pid = NULL;
 int next_faint_seq = 1;
 
 bool want_enter = false;
@@ -72,16 +72,6 @@ void log_msg(const char *fmt, ...) {
     printf("\n");
     fflush(stdout);
     va_end(ap);
-}
-
-void sleep_if_slow(void) {
-    if (!slow) {
-        return;
-    }
-    double start = MPI_Wtime();
-    while (MPI_Wtime() - start < 1.0) {
-        /* busy wait for readability */
-    }
 }
 
 int id_cmp(RequestId a, RequestId b) {
@@ -111,6 +101,32 @@ void clock_recv_tick(int received_ts) {
 
 int rand_range(int min_value, int max_value) {
     return min_value + rand() % (max_value - min_value + 1);
+}
+
+long long current_x_acc(void) {
+    return dose;
+}
+
+long long current_room_smell(void) {
+    long long room_smell = 0;
+    for (int i = 0; i < world_size; ++i) {
+        if (requests[i].inside) {
+            room_smell += requests[i].smell;
+        }
+    }
+    return room_smell;
+}
+
+void sleep_cycle_delay(void) {
+    if (!slow) {
+        return;
+    }
+
+    double start = MPI_Wtime();
+    double delay = (double)rand_range(1, 3);
+    while (MPI_Wtime() - start < delay) {
+        /* busy wait for readability */
+    }
 }
 
 void ensure_history_capacity(void) {
@@ -158,10 +174,24 @@ void trim_history_prefix(RequestId border) {
     }
 }
 
+void remove_history_pid(int target_pid) {
+    for (int i = 0; i < history_count; ++i) {
+        if (history[i].pid != target_pid) {
+            continue;
+        }
+
+        history_sum -= history[i].smell;
+        if (i + 1 < history_count) {
+            memmove(history + i, history + i + 1, (size_t)(history_count - i - 1) * sizeof(Entry));
+        }
+        history_count--;
+        return;
+    }
+}
+
 void pack_send(int dest, int tag, int a, int b, int c) {
     int msg[4] = {a, b, c, 0};
     MPI_Send(msg, 4, MPI_INT, dest, tag, MPI_COMM_WORLD);
-    sleep_if_slow();
 }
 
 void broadcast(int tag, int a, int b, int c) {
@@ -232,11 +262,6 @@ bool self_is_allowed(void) {
 }
 
 void apply_faint(RequestId trigger, int faint_id) {
-    if (faint_id <= last_faint_id) {
-        return;
-    }
-
-    last_faint_id = faint_id;
     dose -= guard_limit;
     if (dose < 0) {
         dose = 0;
@@ -288,7 +313,7 @@ void maybe_send_faint(void) {
 
     int faint_id = (world_rank + 1) * 1000000 + next_faint_seq++;
     faint_sent = true;
-    log_msg("Wysylam FAINT dla wejscia (%d,%d), zakumulowany smrod=%lld", trigger.ts, trigger.pid, accumulated);
+    log_msg("Wysyłam FAINT dla wejścia (%d,%d), accumulated=%lld", trigger.ts, trigger.pid + 1, accumulated);
     apply_faint(trigger, faint_id);
     broadcast(TAG_FAINT, trigger.ts, trigger.pid, faint_id);
 }
@@ -325,16 +350,18 @@ void handle_release_message(int ts, int pid) {
     if (!requests[pid].active || requests[pid].ts != ts) {
         return;
     }
+    remove_history_pid(pid);
     requests[pid].inside = false;
     requests[pid].active = false;
 }
 
-void handle_faint_message(int trigger_ts, int trigger_pid, int faint_id) {
+void handle_faint_message(int source_pid, int trigger_ts, int trigger_pid, int faint_id) {
     clock_recv_tick(trigger_ts);
-    if (faint_id <= last_faint_id) {
+    if (faint_id <= last_faint_id_by_pid[source_pid]) {
         return;
     }
 
+    last_faint_id_by_pid[source_pid] = faint_id;
     RequestId trigger = {trigger_ts, trigger_pid};
     apply_faint(trigger, faint_id);
 }
@@ -364,7 +391,7 @@ void pump_messages(void) {
                 if (want_enter && !inside) {
                     ack_count++;
                     if (ack_count == world_size - 1) {
-                        log_msg("Odebralem wszystkie ACK (%d/%d)", ack_count, world_size - 1);
+                        log_msg("Odebrałem wszystkie ACK (%d/%d)", ack_count, world_size - 1);
                     }
                 }
                 break;
@@ -375,7 +402,7 @@ void pump_messages(void) {
                 handle_release_message(msg[0], msg[1]);
                 break;
             case TAG_FAINT:
-                handle_faint_message(msg[0], msg[1], msg[2]);
+                handle_faint_message(status.MPI_SOURCE, msg[0], msg[1], msg[2]);
                 break;
             case TAG_BANNED:
                 handle_banned_message(msg[0]);
@@ -399,7 +426,7 @@ void start_request(void) {
     requests[world_rank].active = true;
     requests[world_rank].inside = false;
 
-    log_msg("Rozpoczynam staranie o sekcje krytyczna (smrod=%d)", smell);
+    log_msg("Rozpoczynam staranie o sekcję krytyczną (smród=%d, x_acc=%lld, smród_w_sali=%lld)", smell, dose, current_room_smell());
     broadcast(TAG_REQUEST, my_request_id.ts, world_rank, smell);
 }
 
@@ -408,10 +435,9 @@ void enter_room(void) {
     inside = true;
     requests[world_rank].inside = true;
 
-    log_msg("Wchodze do sekcji krytycznej");
-
     insert_history((Entry){my_request_id.ts, world_rank, smell});
     dose += smell;
+    log_msg("Wchodzę do sekcji krytycznej (x_acc=%lld, smród_w_sali=%lld, smród=%d)", dose, current_room_smell(), smell);
 
     broadcast(TAG_ENTER, my_request_id.ts, world_rank, smell);
     maybe_send_faint();
@@ -421,7 +447,6 @@ void enter_room(void) {
 
 void release_room(void) {
     clock_send_tick();
-    log_msg("Wychodze z sekcji krytycznej");
 
     broadcast(TAG_RELEASE, my_request_id.ts, world_rank, 0);
 
@@ -431,10 +456,12 @@ void release_room(void) {
     requests[world_rank].inside = false;
     work_steps_left = 0;
 
+    log_msg("Wychodzę z sekcji krytycznej (x_acc=%lld, smród_w_sali=%lld, smród=%d)", dose, current_room_smell(), smell);
+
     smell += rand_range(1, 5);
     if (smell > max_smell) {
         excluded = true;
-        log_msg("Otaku %d zostal zbanowany z Pyrconu, aktualny smrod=%d", world_rank + 1, smell);
+        log_msg("Otaku %d został zbanowany z Pyrconu, aktualny smród=%d", world_rank + 1, smell);
         banned_count++;
         broadcast_banned();
     }
@@ -451,7 +478,7 @@ void try_progress(void) {
 
     if (want_enter && !inside && ack_count >= world_size - 1) {
         if (self_is_allowed()) {
-            log_msg("Mam komplet ACK, wysylam ENTER");
+            log_msg("Mam komplet ACK, wysyłam ENTER (x_acc=%lld, smród_w_sali=%lld, smród=%d)", dose, current_room_smell(), smell);
             enter_room();
         }
     }
@@ -470,11 +497,11 @@ int parse_int(const char *text, const char *name) {
     char *end = NULL;
     long value = strtol(text, &end, 10);
     if (!text[0] || (end && *end != '\0')) {
-        fprintf(stderr, "Niepoprawna wartosc parametru %s: %s\n", name, text);
+        fprintf(stderr, "Niepoprawna wartość parametru %s: %s\n", name, text);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
     if (value < 0 || value > 1000000000L) {
-        fprintf(stderr, "Wartosc parametru %s poza zakresem: %s\n", name, text);
+        fprintf(stderr, "Wartość parametru %s poza zakresem: %s\n", name, text);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
     return (int)value;
@@ -487,7 +514,7 @@ int main(int argc, char **argv) {
 
     if (argc < 4) {
         if (world_rank == 0) {
-            fprintf(stderr, "Uzycie: %s S M X [slow]\n", argv[0]);
+            fprintf(stderr, "Użycie: %s S M X [slow]\n", argv[0]);
         }
         MPI_Finalize();
         return 1;
@@ -499,17 +526,16 @@ int main(int argc, char **argv) {
     if (argc >= 5) {
         slow = parse_int(argv[4], "slow") != 0;
     }
-    
-    if(guard_limit < max_smell) {
-    	fprintf(stderr, "X nie może być mniejsze od M.\n");
-    	MPI_Finalize();
-    	return 1;
+
+    if (guard_limit < max_smell) {
+        fprintf(stderr, "X nie może być mniejsze od M.\n");
+        MPI_Finalize();
+        return 1;
     }
-    
-    
+
     if (stations <= 0 || guard_limit <= 0) {
         if (world_rank == 0) {
-            fprintf(stderr, "S i X musza byc dodatnie.\n");
+            fprintf(stderr, "S i X muszą być dodatnie.\n");
         }
         MPI_Finalize();
         return 1;
@@ -520,7 +546,7 @@ int main(int argc, char **argv) {
         fflush(stdout);
     }
 
-    srand(1234567u + (unsigned int)world_rank);
+    srand(1729u + (unsigned int)world_rank);
     smell = 1 + rand_range(0, 4);
 
     requests = (ProcRequest *)calloc((size_t)world_size, sizeof(ProcRequest));
@@ -529,12 +555,19 @@ int main(int argc, char **argv) {
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
+    last_faint_id_by_pid = (int *)calloc((size_t)world_size, sizeof(int));
+    if (!last_faint_id_by_pid) {
+        fprintf(stderr, "Out of memory while allocating faint table\n");
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+
     for (;;) {
+        sleep_cycle_delay();
         pump_messages();
         try_progress();
         pump_messages();
 
-        if (banned_count >= world_size) {
+    if (banned_count >= world_size) {
             break;
         }
     }
@@ -542,5 +575,6 @@ int main(int argc, char **argv) {
     MPI_Finalize();
     free(requests);
     free(history);
+    free(last_faint_id_by_pid);
     return 0;
 }
