@@ -1,4 +1,4 @@
-# Algorytm rozproszony - Otaku
+# Algorytm rozproszony w MPI - Otaku
 
 ## Kompilacja i uruchamianie:
 
