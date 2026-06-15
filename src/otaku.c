@@ -18,62 +18,62 @@ enum {
 typedef struct {
     int ts;
     int pid;
-} RequestId;
+} RequestId;    //identyfikator zdarzenia w logice Lamporta / timestamp
 
 typedef struct {
     int ts;
     int pid;
     int smell;
-} Entry;
+} Entry;        //wpis historii wejść do sekcji krytycznej
 
 typedef struct {
     int ts;
     int smell;
     bool active;
     bool inside;
-} ProcRequest;
+} ProcRequest;  //stan jednego procesu w tablicy symulacji
 
-int world_size = 0;
-int world_rank = 0;
-int lamport = 0;
+int n_count = 0;        //liczba otaku
+int pid = 0;            //identyfikator procesu MPI 
+int lamport = 0;        //zegar lamporta
 
-int stations = 0;
-int max_smell = 0;
-int guard_limit = 0;
+int stations = 0;       //liczba stanowisk
+int max_smell = 0;      //max smell w pokoju / przed banem
+int guard_limit = 0;    //wartość X - dawna przed FAINTem strażnika
 
-int smell = 1;
+int smell = 1;          //aktualny smród procesu/otaku
 
-ProcRequest *requests = NULL;
-Entry *history = NULL;
-int history_count = 0;
-int history_cap = 0;
-long long history_sum = 0;
+ProcRequest *requests = NULL;   //tablica stanow wszystkich procesow
+Entry *history = NULL;          //historia wejść do sekcji krytycznej 
+int history_count = 0;          //liczba wpisów w historii
+int history_cap = 0;            //aktualna pojemnosc bufora historii
+long long history_sum = 0;      //suma smrodu z aktualnej historii
 
-long long dose = 0;
-RequestId cut_id = {-1, -1};
-RequestId my_request_id = {-1, -1};
-int *last_faint_id_by_pid = NULL;
-int next_faint_seq = 1;
+long long dose = 0;                 //aktualna dawka x_acc
+RequestId cut_id = {-1, -1};        //odcięcie historii po ostatnim faincie
+RequestId my_request_id = {-1, -1}; //identyfikator obecnego zgłoszenia procesu
 
-bool want_enter = false;
-bool inside = false;
-bool faint_sent = false;
-bool excluded = false;
-bool slow = true;
-int ack_count = 0;
-int work_steps_left = 0;
-int banned_count = 0;
+bool want_enter = false;    //czy proces chce wejść do sekcji krytycznej
+bool inside = false;        //czy proces jest teraz w sekcji krytycznej (w pokoju)
+bool faint_sent = false;    //czy proces juz wysłał FAINT dla tej rundy
+bool excluded = false;      //czy proces został zbanowany
+bool slow = true;           //tryb wolniejszej symulacji
+int ack_count = 0;          //ile ACK juz przyszło
+int work_steps_left = 0;    //ile krokow pracy zostało w sekcji krytycznej (symulacja siedzenia przy stanowisku)
+int banned_count = 0;       //ile procesow dostało bana
 
+// Wypisuje log z numerem procesu i czasem Lamporta.
 void log_msg(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    printf("[%d] [t%d] ", world_rank + 1, lamport);
+    printf("[%d] [t%d] ", pid + 1, lamport);
     vprintf(fmt, ap);
     printf("\n");
     fflush(stdout);
     va_end(ap);
 }
 
+// Porównuje dwa identyfikatory zadań po ts i pid
 int id_cmp(RequestId a, RequestId b) {
     if (a.ts != b.ts) {
         return (a.ts < b.ts) ? -1 : 1;
@@ -84,14 +84,12 @@ int id_cmp(RequestId a, RequestId b) {
     return 0;
 }
 
-bool id_leq(RequestId a, RequestId b) {
-    return id_cmp(a, b) <= 0;
-}
-
+// Zwiększa zegar przed wysłaniem wiadomości.
 void clock_send_tick(void) {
     lamport++;
 }
 
+// Aktualizuje zegar po odebraniu wiadomości.
 void clock_recv_tick(int received_ts) {
     if (lamport < received_ts) {
         lamport = received_ts;
@@ -99,17 +97,15 @@ void clock_recv_tick(int received_ts) {
     lamport++;
 }
 
+// Losowa liczba z zakresu domkniętego
 int rand_range(int min_value, int max_value) {
     return min_value + rand() % (max_value - min_value + 1);
 }
 
-long long current_x_acc(void) {
-    return dose;
-}
-
+// Aktualny smród w pokoju.
 long long current_room_smell(void) {
     long long room_smell = 0;
-    for (int i = 0; i < world_size; ++i) {
+    for (int i = 0; i < n_count; ++i) {
         if (requests[i].inside) {
             room_smell += requests[i].smell;
         }
@@ -117,6 +113,7 @@ long long current_room_smell(void) {
     return room_smell;
 }
 
+// Krótka przerwa jak tryb slow jest włączony
 void sleep_cycle_delay(void) {
     if (!slow) {
         return;
@@ -125,10 +122,11 @@ void sleep_cycle_delay(void) {
     double start = MPI_Wtime();
     double delay = (double)rand_range(1, 3);
     while (MPI_Wtime() - start < delay) {
-        /* busy wait for readability */
+        // aktywne czekanie dla poprawienia czytelności
     }
 }
 
+// Powieksza bufor historii wejść, gdy jest pełny.
 void ensure_history_capacity(void) {
     if (history_count < history_cap) {
         return;
@@ -144,6 +142,7 @@ void ensure_history_capacity(void) {
     history_cap = new_cap;
 }
 
+// Wstawia nowe wejscie do historii w kolejności czasowej
 void insert_history(Entry e) {
     ensure_history_capacity();
 
@@ -157,6 +156,7 @@ void insert_history(Entry e) {
     history_sum += e.smell;
 }
 
+// Usuwa z historii wpisy starsze lub równe od danego timestampu+pid
 void trim_history_prefix(RequestId border) {
     int keep_from = 0;
     while (keep_from < history_count) {
@@ -174,6 +174,7 @@ void trim_history_prefix(RequestId border) {
     }
 }
 
+// Usuwa z historii pierwszy wpis danego procesu.
 void remove_history_pid(int target_pid) {
     for (int i = 0; i < history_count; ++i) {
         if (history[i].pid != target_pid) {
@@ -189,29 +190,33 @@ void remove_history_pid(int target_pid) {
     }
 }
 
+// Pakuje i wysyla jedna wiadomosc MPI.
 void pack_send(int dest, int tag, int a, int b, int c) {
     int msg[4] = {a, b, c, 0};
     MPI_Send(msg, 4, MPI_INT, dest, tag, MPI_COMM_WORLD);
 }
 
+// Rozsyla wiadomosc do wszystkich pozostalych procesow.
 void broadcast(int tag, int a, int b, int c) {
-    for (int dest = 0; dest < world_size; ++dest) {
-        if (dest == world_rank) {
+    for (int dest = 0; dest < n_count; ++dest) {
+        if (dest == pid) {
             continue;
         }
         pack_send(dest, tag, a, b, c);
     }
 }
 
+// Rozsyła informacja o banie do wszystkich procesow
 void broadcast_banned(void) {
-    for (int dest = 0; dest < world_size; ++dest) {
-        if (dest == world_rank) {
+    for (int dest = 0; dest < n_count; ++dest) {
+        if (dest == pid) {
             continue;
         }
-        pack_send(dest, TAG_BANNED, world_rank, 0, 0);
+        pack_send(dest, TAG_BANNED, pid, 0, 0);
     }
 }
 
+// Porownuje aktywne procesy po ich czasie zgloszenia.
 int active_request_compare(const void *lhs, const void *rhs) {
     int a = *(const int *)lhs;
     int b = *(const int *)rhs;
@@ -220,19 +225,21 @@ int active_request_compare(const void *lhs, const void *rhs) {
     return id_cmp(ia, ib);
 }
 
+// Buduje posortowaną liste aktywnych procesow.
 int build_active_list(int *active_pids) {
     int count = 0;
-    for (int pid = 0; pid < world_size; ++pid) {
-        if (requests[pid].active) {
-            active_pids[count++] = pid;
+    for (int proc_pid = 0; proc_pid < n_count; ++proc_pid) {
+        if (requests[proc_pid].active) {
+            active_pids[count++] = proc_pid;
         }
     }
     qsort(active_pids, (size_t)count, sizeof(int), active_request_compare);
     return count;
 }
 
+// Sprawdza, czy ten proces moze wejsc do sekcji krytycznej.
 bool self_is_allowed(void) {
-    int *active_pids = (int *)malloc((size_t)world_size * sizeof(int));
+    int *active_pids = (int *)malloc((size_t)n_count * sizeof(int));
     if (!active_pids) {
         fprintf(stderr, "Out of memory while building active request list\n");
         MPI_Abort(MPI_COMM_WORLD, 1);
@@ -244,14 +251,14 @@ bool self_is_allowed(void) {
     bool allowed = false;
 
     for (int i = 0; i < active_count; ++i) {
-        int pid = active_pids[i];
-        if (admitted < stations && smell_sum + requests[pid].smell <= max_smell) {
-            if (pid == world_rank) {
+        int proc_pid = active_pids[i];
+        if (admitted < stations && smell_sum + requests[proc_pid].smell <= max_smell) {
+            if (proc_pid == pid) {
                 allowed = true;
                 break;
             }
             admitted++;
-            smell_sum += requests[pid].smell;
+            smell_sum += requests[proc_pid].smell;
         } else {
             break;
         }
@@ -261,7 +268,8 @@ bool self_is_allowed(void) {
     return allowed;
 }
 
-void apply_faint(RequestId trigger, int faint_id) {
+// Aktualizuje stan po faincie.
+void apply_faint(RequestId trigger) {
     dose -= guard_limit;
     if (dose < 0) {
         dose = 0;
@@ -270,6 +278,7 @@ void apply_faint(RequestId trigger, int faint_id) {
     cut_id = trigger;
 }
 
+// Szuka wpisu, ktory przekracza próg X by ustalić winowajce aby on wysłał faint. 
 bool compute_trigger(RequestId *trigger_out, long long *accumulated_out) {
     long long base_dose = dose - history_sum;
     if (base_dose < 0) {
@@ -292,6 +301,7 @@ bool compute_trigger(RequestId *trigger_out, long long *accumulated_out) {
     return false;
 }
 
+// Wysyla FAINT, gdy ten proces sam wywolal przekroczenie progu.
 void maybe_send_faint(void) {
     RequestId trigger;
     long long accumulated = 0;
@@ -311,70 +321,71 @@ void maybe_send_faint(void) {
         return;
     }
 
-    int faint_id = (world_rank + 1) * 1000000 + next_faint_seq++;
     faint_sent = true;
     log_msg("Wysyłam FAINT dla wejścia (%d,%d), accumulated=%lld", trigger.ts, trigger.pid + 1, accumulated);
-    apply_faint(trigger, faint_id);
-    broadcast(TAG_FAINT, trigger.ts, trigger.pid, faint_id);
+    apply_faint(trigger);
+    broadcast(TAG_FAINT, trigger.ts, trigger.pid, 0);
 }
 
-void handle_request_message(int ts, int pid, int smell_value) {
+// Odbiera REQUEST i odsyla ACK do nadawcy.
+void handle_request_message(int ts, int proc_pid, int smell_value) {
     clock_recv_tick(ts);
-    requests[pid].ts = ts;
-    requests[pid].smell = smell_value;
-    requests[pid].active = true;
-    if (pid == world_rank) {
+    requests[proc_pid].ts = ts;
+    requests[proc_pid].smell = smell_value;
+    requests[proc_pid].active = true;
+    if (proc_pid == pid) {
         return;
     }
-    pack_send(pid, TAG_ACK, lamport, world_rank, 0);
+    pack_send(proc_pid, TAG_ACK, lamport, pid, 0);
 }
 
-void handle_enter_message(int ts, int pid, int smell_value) {
+// Odbiera ENTER i zapisuje wejscie do historii.
+void handle_enter_message(int ts, int proc_pid, int smell_value) {
     clock_recv_tick(ts);
-    RequestId entry_id = {ts, pid};
-    if (id_leq(entry_id, cut_id)) {
+    RequestId entry_id = {ts, proc_pid};
+    if (id_cmp(entry_id, cut_id) <= 0) {
         return;
     }
-    if (!requests[pid].active || requests[pid].ts != ts) {
+    if (!requests[proc_pid].active || requests[proc_pid].ts != ts) {
         return;
     }
 
-    requests[pid].inside = true;
-    insert_history((Entry){ts, pid, smell_value});
+    requests[proc_pid].inside = true;
+    insert_history((Entry){ts, proc_pid, smell_value});
     dose += smell_value;
     maybe_send_faint();
 }
 
-void handle_release_message(int ts, int pid) {
+// Odbiera RELEASE i usuwa proces z historii
+void handle_release_message(int ts, int proc_pid) {
     clock_recv_tick(ts);
-    if (!requests[pid].active || requests[pid].ts != ts) {
+    if (!requests[proc_pid].active || requests[proc_pid].ts != ts) {
         return;
     }
-    remove_history_pid(pid);
-    requests[pid].inside = false;
-    requests[pid].active = false;
+    remove_history_pid(proc_pid);
+    requests[proc_pid].inside = false;
+    requests[proc_pid].active = false;
 }
 
-void handle_faint_message(int source_pid, int trigger_ts, int trigger_pid, int faint_id) {
+// Odbiera FAINT i naklada odciecie na biezacy stan.
+void handle_faint_message(int trigger_ts, int trigger_pid) {
     clock_recv_tick(trigger_ts);
-    if (faint_id <= last_faint_id_by_pid[source_pid]) {
-        return;
-    }
-
-    last_faint_id_by_pid[source_pid] = faint_id;
     RequestId trigger = {trigger_ts, trigger_pid};
-    apply_faint(trigger, faint_id);
+    apply_faint(trigger);
 }
 
-void handle_banned_message(int pid) {
+// Liczy ban dla procesu, ktory dostal info o wykluczeniu.
+void handle_banned_message(int source_pid) {
+    (void)source_pid;
     banned_count++;
 }
 
+// Przetwarza wszystkie oczekujace wiadomosci MPI.
 void pump_messages(void) {
     int flag = 0;
     MPI_Status status;
 
-    for (;;) {
+    while (1) {
         MPI_Iprobe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &flag, &status);
         if (!flag) {
             break;
@@ -390,8 +401,8 @@ void pump_messages(void) {
             case TAG_ACK:
                 if (want_enter && !inside) {
                     ack_count++;
-                    if (ack_count == world_size - 1) {
-                        log_msg("Odebrałem wszystkie ACK (%d/%d)", ack_count, world_size - 1);
+                    if (ack_count == n_count - 1) {
+                        log_msg("Odebrałem wszystkie ACK (%d/%d)", ack_count, n_count - 1);
                     }
                 }
                 break;
@@ -402,7 +413,7 @@ void pump_messages(void) {
                 handle_release_message(msg[0], msg[1]);
                 break;
             case TAG_FAINT:
-                handle_faint_message(status.MPI_SOURCE, msg[0], msg[1], msg[2]);
+                handle_faint_message(msg[0], msg[1]);
                 break;
             case TAG_BANNED:
                 handle_banned_message(msg[0]);
@@ -413,77 +424,82 @@ void pump_messages(void) {
     }
 }
 
+// Rozpoczyna probe wejscia do sekcji krytycznej.
 void start_request(void) {
     clock_send_tick();
     my_request_id.ts = lamport;
-    my_request_id.pid = world_rank;
+    my_request_id.pid = pid;
     want_enter = true;
     faint_sent = false;
     ack_count = 0;
 
-    requests[world_rank].ts = my_request_id.ts;
-    requests[world_rank].smell = smell;
-    requests[world_rank].active = true;
-    requests[world_rank].inside = false;
+    requests[pid].ts = my_request_id.ts;
+    requests[pid].smell = smell;
+    requests[pid].active = true;
+    requests[pid].inside = false;
 
     log_msg("Rozpoczynam staranie o sekcję krytyczną (smród=%d, x_acc=%lld, smród_w_sali=%lld)", smell, dose, current_room_smell());
-    broadcast(TAG_REQUEST, my_request_id.ts, world_rank, smell);
+    broadcast(TAG_REQUEST, my_request_id.ts, pid, smell);
 }
 
+// Wchodzi do sekcji krytycznej i rozglasza ENTER.
 void enter_room(void) {
     clock_send_tick();
     inside = true;
-    requests[world_rank].inside = true;
+    requests[pid].inside = true;
 
-    insert_history((Entry){my_request_id.ts, world_rank, smell});
+    insert_history((Entry){my_request_id.ts, pid, smell});
     dose += smell;
     log_msg("Wchodzę do sekcji krytycznej (x_acc=%lld, smród_w_sali=%lld, smród=%d)", dose, current_room_smell(), smell);
 
-    broadcast(TAG_ENTER, my_request_id.ts, world_rank, smell);
+    broadcast(TAG_ENTER, my_request_id.ts, pid, smell);
     maybe_send_faint();
 
-    work_steps_left = 3 + (world_rank % 3);
+    // Liczba krokow losowa żeby symulacja byla mniej równa.
+    work_steps_left = 3 + rand_range(0, 4);
 }
 
+// Wychodzi z sekcji krytycznej i aktualizuje stan po wyjsciu.
 void release_room(void) {
     clock_send_tick();
 
-    broadcast(TAG_RELEASE, my_request_id.ts, world_rank, 0);
+    broadcast(TAG_RELEASE, my_request_id.ts, pid, 0);
 
     inside = false;
     want_enter = false;
-    requests[world_rank].active = false;
-    requests[world_rank].inside = false;
+    requests[pid].active = false;
+    requests[pid].inside = false;
     work_steps_left = 0;
 
     log_msg("Wychodzę z sekcji krytycznej (x_acc=%lld, smród_w_sali=%lld, smród=%d)", dose, current_room_smell(), smell);
 
-    smell += rand_range(1, 5);
+    smell += rand_range(2, 5);
     if (smell > max_smell) {
         excluded = true;
-        log_msg("Otaku %d został zbanowany z Pyrconu, aktualny smród=%d", world_rank + 1, smell);
+        log_msg("Otaku %d został zbanowany z Pyrconu, aktualny smród=%d", pid + 1, smell);
         banned_count++;
         broadcast_banned();
     }
 }
 
+// Sprawdza, czy mozna przejsc do kolejnego kroku symulacji.
 void try_progress(void) {
-    if (excluded) {
+    if (excluded) { //zbanowany to nie rób nic
         return;
     }
 
-    if (!want_enter && !inside) {
+    if (!want_enter && !inside) { //jak nie stara się jeszcze o wejście, to zacznij
         start_request();
     }
 
-    if (want_enter && !inside && ack_count >= world_size - 1) {
+    if (want_enter && !inside && ack_count >= n_count - 1) { //chce wejść i ma wszystkie ACK, sprawdź czy może wejść
         if (self_is_allowed()) {
             log_msg("Mam komplet ACK, wysyłam ENTER (x_acc=%lld, smród_w_sali=%lld, smród=%d)", dose, current_room_smell(), smell);
             enter_room();
         }
     }
 
-    if (inside) {
+    if (inside) { 
         if (work_steps_left > 0) {
             work_steps_left--;
         }
@@ -493,6 +509,7 @@ void try_progress(void) {
     }
 }
 
+// Parsuje liczbę z argumentu
 int parse_int(const char *text, const char *name) {
     char *end = NULL;
     long value = strtol(text, &end, 10);
@@ -500,20 +517,21 @@ int parse_int(const char *text, const char *name) {
         fprintf(stderr, "Niepoprawna wartość parametru %s: %s\n", name, text);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
-    if (value < 0 || value > 1000000000L) {
+    if (value < 0 || value > 100000L) {
         fprintf(stderr, "Wartość parametru %s poza zakresem: %s\n", name, text);
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
     return (int)value;
 }
 
+// Main (inicjalizacja MPI, parsowanie argumentów, główna pętla)
 int main(int argc, char **argv) {
     MPI_Init(&argc, &argv);
-    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
-    MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+    MPI_Comm_rank(MPI_COMM_WORLD, &pid);
+    MPI_Comm_size(MPI_COMM_WORLD, &n_count);
 
     if (argc < 4) {
-        if (world_rank == 0) {
+        if (pid == 0) {
             fprintf(stderr, "Użycie: %s S M X [slow]\n", argv[0]);
         }
         MPI_Finalize();
@@ -534,40 +552,37 @@ int main(int argc, char **argv) {
     }
 
     if (stations <= 0 || guard_limit <= 0) {
-        if (world_rank == 0) {
+        if (pid == 0) {
             fprintf(stderr, "S i X muszą być dodatnie.\n");
         }
         MPI_Finalize();
         return 1;
     }
 
-    if (world_rank == 0) {
-        printf("Start: N=%d, S=%d, M=%d, X=%d\n", world_size, stations, max_smell, guard_limit);
+    if (pid == 0) { // tylko proces 0 wypisuje parametry (żeby wszstkie nie wypisały tego samego)
+        printf("Start: N=%d, S=%d, M=%d, X=%d\n", n_count, stations, max_smell, guard_limit);
         fflush(stdout);
     }
 
-    srand(1729u + (unsigned int)world_rank);
+    //seed dla rng
+    srand(1729u + (unsigned int)pid);
     smell = 1 + rand_range(0, 4);
 
-    requests = (ProcRequest *)calloc((size_t)world_size, sizeof(ProcRequest));
+    requests = (ProcRequest *)calloc((size_t)n_count, sizeof(ProcRequest));
     if (!requests) {
         fprintf(stderr, "Out of memory while allocating request table\n");
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
-    last_faint_id_by_pid = (int *)calloc((size_t)world_size, sizeof(int));
-    if (!last_faint_id_by_pid) {
-        fprintf(stderr, "Out of memory while allocating faint table\n");
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
-
-    for (;;) {
+    // GŁÓWNA PĘTLA SYMULACJI
+    while (1) {
         sleep_cycle_delay();
         pump_messages();
         try_progress();
         pump_messages();
 
-    if (banned_count >= world_size) {
+    // jak wszyscy są zbanowani to exit
+    if (banned_count >= n_count) {
             break;
         }
     }
@@ -575,6 +590,5 @@ int main(int argc, char **argv) {
     MPI_Finalize();
     free(requests);
     free(history);
-    free(last_faint_id_by_pid);
     return 0;
 }
